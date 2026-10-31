@@ -22,7 +22,7 @@ IGNORAR = {".tmp", ".part", ".crdownload"}
 
 class Monitor:
     def __init__(self, pasta_entrada: str | Path, ao_receber: Callable[[Path], None],
-                 intervalo: float = 0.5):
+                 intervalo: float = 0.5, pausado: threading.Event | None = None):
         self.entrada = Path(pasta_entrada)
         self.processando = self.entrada / "processando"
         self.com_erro = self.entrada / "com_erro"
@@ -30,6 +30,7 @@ class Monitor:
             p.mkdir(parents=True, exist_ok=True)
         self.ao_receber = ao_receber
         self.intervalo = intervalo
+        self.pausado = pausado or threading.Event()  # pausado: arquivos esperam na pasta
         self._tamanhos: dict[Path, int] = {}
         self._parar = threading.Event()
         self._thread: threading.Thread | None = None
@@ -75,7 +76,8 @@ class Monitor:
     def _laco(self) -> None:
         while not self._parar.is_set():
             try:
-                self.verificar_uma_vez()
+                if not self.pausado.is_set():
+                    self.verificar_uma_vez()
             except Exception:
                 log.exception("Erro no monitor")
             self._parar.wait(self.intervalo)

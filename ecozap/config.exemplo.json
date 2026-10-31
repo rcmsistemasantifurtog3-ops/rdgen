@@ -2,14 +2,19 @@
   "pasta_entrada": "C:/ProgramData/EcoZap/entrada",
   "pasta_dados": "C:/ProgramData/EcoZap/dados",
   "dias_retencao": 15,
+  "dias_retencao_clientes": 365,
 
   "formato_padrao": "pdf",
   "tamanho_papel_padrao": "80mm",
   "codificacao_texto": "auto",
 
   "nome_loja": "Minha Loja",
+  "identificacao_caixa": "Caixa 1",
   "mensagem": "Olá{nome}! Segue o seu comprovante da {loja}. Obrigado pela preferência e por economizar papel com a gente 🌱",
+  "mensagem_nfce": "\n\n🧾 Consulte sua nota fiscal: {link}",
+  "mensagem_chave": "\n🔑 Chave de acesso: {chave}",
   "rodape_eco": "Comprovante digital - EcoZap. Menos papel, mais planeta.",
+  "usar_bandeja": true,
 
   "whatsapp": {
     "provedor": "simulado",
@@ -19,7 +24,8 @@
       "phone_number_id": "000000000000000",
       "versao_api": "v21.0",
       "template": "",
-      "idioma_template": "pt_BR"
+      "idioma_template": "pt_BR",
+      "parametros_template": ["{loja}"]
     },
 
     "evolution": {
@@ -27,5 +33,14 @@
       "instancia": "minha-loja",
       "apikey": "COLE_AQUI_A_APIKEY"
     }
+  },
+
+  "painel": {
+    "ativo": false,
+    "host": "127.0.0.1",
+    "porta": 8765,
+    "usuario": "admin",
+    "senha": "",
+    "caixas": []
   }
 }

@@ -23,9 +23,17 @@ _GS_PARAMS = {
 }
 
 
+MARCA_QR = "[[QR:{}]]"  # o conversor troca essa marca pela imagem do QR Code
+
+
 def limpar(dados: bytes) -> bytes:
-    """Remove comandos ESC/POS, mantendo texto, quebras de linha e tabs."""
+    """Remove comandos ESC/POS, mantendo texto, quebras de linha e tabs.
+
+    O QR Code (ex.: NFC-e) não é jogado fora: onde a impressora o imprimiria,
+    entra uma linha ``[[QR:conteúdo]]`` para o conversor redesenhar.
+    """
     saida = bytearray()
+    qr_guardado = b""
     i, n = 0, len(dados)
     while i < n:
         b = dados[i]
@@ -57,6 +65,14 @@ def limpar(dados: bytes) -> bytes:
             if cmd in (ord("("), ord("8")) and i + 4 < n:  # QR Code, imagens...
                 if cmd == ord("("):
                     tam = dados[i + 3] + dados[i + 4] * 256
+                    if dados[i + 2] == ord("k") and i + 6 < n and dados[i + 5] == 49:
+                        fn = dados[i + 6]
+                        if fn == 80:    # guarda os dados do QR Code
+                            qr_guardado = dados[i + 8:i + 5 + tam]
+                        elif fn == 81 and qr_guardado:  # imprime o QR guardado
+                            conteudo = qr_guardado.decode("latin-1").replace("]]", "] ]")
+                            saida += b"\n" + MARCA_QR.format(conteudo).encode("latin-1") + b"\n"
+                            qr_guardado = b""
                     i += 5 + tam
                 else:  # GS 8 L p1 p2 p3 p4
                     tam = int.from_bytes(dados[i + 3:i + 7], "little")

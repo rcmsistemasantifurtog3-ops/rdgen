@@ -3,3 +3,6 @@ dados/
 __pycache__/
 *.pyc
 .venv/
+instalador/ecozap.ico
+build/
+dist/
