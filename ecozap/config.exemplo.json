@@ -1,0 +1,31 @@
+{
+  "pasta_entrada": "C:/ProgramData/EcoZap/entrada",
+  "pasta_dados": "C:/ProgramData/EcoZap/dados",
+  "dias_retencao": 15,
+
+  "formato_padrao": "pdf",
+  "tamanho_papel_padrao": "80mm",
+  "codificacao_texto": "auto",
+
+  "nome_loja": "Minha Loja",
+  "mensagem": "Olá{nome}! Segue o seu comprovante da {loja}. Obrigado pela preferência e por economizar papel com a gente 🌱",
+  "rodape_eco": "Comprovante digital - EcoZap. Menos papel, mais planeta.",
+
+  "whatsapp": {
+    "provedor": "simulado",
+
+    "cloud_api": {
+      "token": "COLE_AQUI_O_TOKEN_PERMANENTE",
+      "phone_number_id": "000000000000000",
+      "versao_api": "v21.0",
+      "template": "",
+      "idioma_template": "pt_BR"
+    },
+
+    "evolution": {
+      "url_base": "http://localhost:8080",
+      "instancia": "minha-loja",
+      "apikey": "COLE_AQUI_A_APIKEY"
+    }
+  }
+}

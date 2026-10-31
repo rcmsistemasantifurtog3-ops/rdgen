@@ -1,0 +1,5 @@
+config.json
+dados/
+__pycache__/
+*.pyc
+.venv/
