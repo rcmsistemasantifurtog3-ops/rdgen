@@ -6,12 +6,14 @@ e tamanho de folha). Em vez de gastar papel, o EcoZap:
 
 1. recebe a impressão;
 2. converte em **PDF**, **JPEG** ou **PNG** (o QR Code da NFC-e é redesenhado);
-3. descobre o **WhatsApp do cliente**: no próprio cupom, pela **agenda** (CPF já
-   conhecido) ou perguntando numa janelinha com **autocompletar**;
+3. descobre o **WhatsApp do cliente**: o cliente **manda mensagem para a loja**
+   (QR Code do cartaz no balcão), ou pelo cupom, pela **agenda** (CPF já conhecido),
+   ou o caixa digita numa janelinha com **autocompletar**;
 4. **envia pelo WhatsApp**, com o **link de consulta da nota fiscal** na mensagem;
 5. **guarda por 15 dias** (configurável) para reenviar fácil, e depois apaga sozinho;
 6. conta os **metros de papel economizados** e gera um **relatório mensal** + imagem
    pronta para as redes sociais. 🌳
+7. **remarketing**: manda promoções de vez em quando, **só para quem pediu** (PROMO). 🎉
 
 ```
  Sistema da loja ──imprimir──► "EcoZap Cupom/PDF"  (impressora do Windows)
@@ -66,6 +68,75 @@ powershell -ExecutionPolicy Bypass -File .\instalador\instalar_impressora.ps1   
 
 Teste: abra o Bloco de Notas, digite `TOTAL 10,00  Cel: (11) 98765-4321` e imprima
 na **EcoZap Cupom**. A janela de envio aparece com o número já preenchido.
+
+## O fluxo ideal: o cliente escreve primeiro
+
+```
+ Balcão: cartaz com QR Code ──► cliente aponta a câmera ──► WhatsApp abre com
+ "Oi! Quero meu comprovante digital" ──► cliente envia ──► webhook ──► EcoZap
+                                                                          │
+   ┌──────────────────────────────────────────────────────────────────────┘
+   ▼
+ • tinha 1 comprovante esperando cliente (últimos 10 min)?  → envia na hora
+ • mandou o CÓDIGO que aparece na tela do caixa (ex.: FEVS)? → envia aquele
+ • vários esperando? → o caixa clica no nome em "Escreveram para a loja agora"
+ • pediu "2ª via" / "comprovante"? → reenvia o último dele
+ • só "oi"? → boas-vindas + convite: "responda PROMO para receber ofertas"
+ • PROMO → entra nas promoções · SAIR → sai na hora
+```
+
+**Por que é melhor:** quando o cliente escreve primeiro, abre a *janela de atendimento
+de 24h* da Meta. Dentro dela o EcoZap manda o comprovante como mensagem normal, **sem
+precisar de template** e **sem custo** na API oficial (atendimento iniciado pelo cliente
+é gratuito). Fora da janela, o EcoZap usa o template configurado automaticamente.
+
+### Cartaz do balcão
+**Ferramentas → Cartaz do balcão** (ou painel web → Cartaz, ou `ecozap cartaz`). Gera
+um A4 com o QR Code `wa.me` da loja. Configure antes o **WhatsApp da loja**
+(Configurações → Atendimento). Na janela de envio também aparece um **QR com o código
+daquele comprovante**: vire a tela para o cliente escanear.
+
+### Receber as mensagens (webhook)
+O painel web precisa estar **ativo** — é ele que recebe as mensagens.
+
+**Evolution API** (mesma rede da loja):
+1. Configurações → Painel web: `host` = `0.0.0.0`, defina uma senha. Libere a porta
+   8765 no Firewall do Windows (só rede privada).
+2. Configurações → WhatsApp: crie um **Webhook Evolution - token** (texto secreto).
+3. Na Evolution, configure o webhook da instância para
+   `http://IP-DO-PC:8765/webhook/evolution?token=SEU_TOKEN` com os eventos
+   `MESSAGES_UPSERT` e `MESSAGES_UPDATE`.
+
+**Cloud API (Meta)** — a Meta exige endereço público **HTTPS**:
+1. Exponha o painel com um túnel, por exemplo **Cloudflare Tunnel**
+   (`cloudflared tunnel --url http://localhost:8765` para testar; para uso fixo,
+   crie um túnel nomeado com domínio próprio).
+2. No app da Meta → WhatsApp → Configuração → Webhook: URL
+   `https://SEU-DOMINIO/webhook/whatsapp`, **token de verificação** = o mesmo de
+   *Webhook Cloud - verify token*; assine o campo **messages**.
+3. Copie o **App Secret** (Configurações do app → Básico) para *Webhook Cloud - app secret*.
+   O EcoZap confere a assinatura de **toda** mensagem e recusa o que não vier da Meta.
+
+O webhook também atualiza **entregue / lido** de cada comprovante e promoção.
+
+### Promoções (remarketing) — com responsabilidade
+**Ferramentas → Promoções** (ou painel web → Promoções, ou `ecozap promocao criar`).
+Título, texto (`{nome}` e `{loja}` são trocados), imagem opcional, público (todos que
+aceitaram ou só quem comprou nos últimos N dias) e agendamento.
+
+Regras que o EcoZap **sempre** aplica:
+- só recebe quem **pediu** (respondeu PROMO ou o caixa marcou "cliente autorizou" na agenda);
+- toda promoção termina com **"Para não receber mais ofertas, responda SAIR"**;
+- **SAIR** tira o cliente na hora, inclusive de campanhas já na fila;
+- no máximo **1 promoção por cliente a cada 7 dias** (configurável);
+- envia só no **horário permitido** (padrão 09:00–20:00), com **pausa aleatória**
+  entre mensagens e **limite diário** — isso protege o número da loja de bloqueio.
+
+Na **Cloud API**, para quem não escreveu nas últimas 24h é preciso um template de
+categoria **Marketing** aprovado: configure `template_promocao` (e
+`template_promocao_imagem`, com cabeçalho de imagem) e `parametros_template_promocao`
+(padrão `["{texto}"]`). Sem template, o EcoZap só manda para quem está com a janela
+aberta e marca os outros como "pulado". Mensagens de marketing são cobradas pela Meta.
 
 ## Recursos
 
@@ -132,6 +203,9 @@ pode ser editado pela tela **Configurações**.
 | `nome_loja`, `identificacao_caixa` | Aparecem na mensagem, relatório e painel. |
 | `mensagem`, `mensagem_nfce`, `mensagem_chave` | Textos. Variáveis: `{nome}`, `{nome_completo}`, `{loja}`, `{link}`, `{chave}`, `{caixa}`. |
 | `usar_bandeja` | Ícone perto do relógio. |
+| `numero_loja` | WhatsApp da loja (cartaz e QR da tela do caixa). |
+| `atendimento.*` | Respostas automáticas, minutos para ligar mensagem ao comprovante, textos. |
+| `promocoes.*` | `ativo`, horário, pausa mín./máx., limite diário, dias entre promoções. |
 | `whatsapp.provedor` | `simulado`, `cloud_api` ou `evolution`. |
 | `painel.*` | `ativo`, `host`, `porta`, `usuario`, `senha`, `caixas`. |
 
@@ -164,6 +238,11 @@ ecozap relatorio 2026-10        :: PDF + imagem do mês
 ecozap clientes [busca]         :: agenda
 ecozap esquecer 11987654321     :: LGPD: apaga cliente da agenda
 ecozap limpar
+ecozap cartaz                   :: cartaz do balcão (PDF)
+ecozap mensagens                :: mensagens recebidas nas últimas 24h
+ecozap promocao criar --titulo "Black Friday" --texto "Olá{nome}! 20% off hoje" [--imagem foto.jpg] [--dias-recentes 30] [--agendar "2026-11-28 09:30"]
+ecozap promocao listar | previa | pausar ID | retomar ID | cancelar ID
+ecozap promocao autorizar 11987654321   :: cliente autorizou no balcão
 ```
 
 ## Retenção, nota fiscal e LGPD
@@ -171,14 +250,16 @@ ecozap limpar
 - **Fiscal:** quem precisa guardar o documento fiscal (XML da NF-e/NFC-e, ~5 anos) é o
   **sistema emissor**. O EcoZap guarda só uma *cópia de conveniência*. Confirme com o contador.
 - **LGPD:** telefone e nome são dados pessoais. O EcoZap guarda pouco tempo, apaga
-  sozinho, não guarda CPF em texto e tem "esquecer cliente". Avise o cliente que o
-  comprovante vai pelo WhatsApp e envie só com o consentimento dele.
+  sozinho, não guarda CPF em texto e tem "esquecer cliente" (apaga também mensagens e
+  histórico de promoções). Comprovante é **atendimento**; promoção é **marketing** e
+  exige **consentimento** — o EcoZap registra quando e como cada cliente aceitou
+  (`consentimento_em`, `origem_consentimento`), o que serve de prova se precisar.
 
 ## Desenvolvimento
 
 ```bash
 pip install -r requirements.txt pytest
-python -m pytest            # 46 testes; rodam em Linux e Windows, sem WhatsApp real
+python -m pytest            # 68 testes; rodam em Linux e Windows, sem WhatsApp real
 ```
 
 ```
@@ -197,6 +278,9 @@ ecozap/
 │   ├── telefone.py      normaliza e acha o telefone no cupom
 │   ├── armazenamento.py SQLite: histórico, agenda, estatísticas, limpeza
 │   ├── relatorio.py     relatório mensal (PDF) e imagem para redes
+│   ├── webhook.py       lê mensagens e status (Cloud API e Evolution)
+│   ├── promocoes.py     campanhas: consentimento, horário, limites, fila
+│   ├── cartaz.py        cartaz do balcão com QR do WhatsApp da loja
 │   ├── whatsapp.py      provedores: simulado, Cloud API, Evolution
 │   ├── icone.py         ícone desenhado em código
 │   ├── instancia.py     impede dois EcoZap ao mesmo tempo
@@ -213,7 +297,8 @@ O workflow `.github/workflows/ecozap.yml` roda os testes (Linux + Windows), gera
 
 - **Assinatura de código** do instalador (certificado OV/EV) para acabar com o aviso do SmartScreen.
 - **Atualização automática**: o EcoZap verificar a última versão no GitHub Releases.
-- **Webhook da Cloud API** para marcar "entregue/lido" no histórico.
+- **Botões interativos** (Cloud API) nas boas-vindas: "Quero ofertas" / "Só comprovante".
+- **Segmentação** das promoções por produto comprado (lendo os itens do cupom).
 - **Pergunta no PDV**: integração direta com o sistema da loja (API) para mandar o telefone junto com o cupom.
 - **Painel central na nuvem** juntando todas as lojas (hoje a visão geral é pela rede local).
 - **Mensagem de pós-venda** opcional (pesquisa de satisfação), sempre com consentimento do cliente.

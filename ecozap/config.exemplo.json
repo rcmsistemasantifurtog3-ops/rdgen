@@ -3,11 +3,9 @@
   "pasta_dados": "C:/ProgramData/EcoZap/dados",
   "dias_retencao": 15,
   "dias_retencao_clientes": 365,
-
   "formato_padrao": "pdf",
   "tamanho_papel_padrao": "80mm",
   "codificacao_texto": "auto",
-
   "nome_loja": "Minha Loja",
   "identificacao_caixa": "Caixa 1",
   "mensagem": "Olá{nome}! Segue o seu comprovante da {loja}. Obrigado pela preferência e por economizar papel com a gente 🌱",
@@ -15,26 +13,53 @@
   "mensagem_chave": "\n🔑 Chave de acesso: {chave}",
   "rodape_eco": "Comprovante digital - EcoZap. Menos papel, mais planeta.",
   "usar_bandeja": true,
-
+  "numero_loja": "(11) 3333-4444",
+  "atendimento": {
+    "respostas_automaticas": true,
+    "minutos_associacao": 10,
+    "texto_cartaz": "Oi! Quero meu comprovante digital",
+    "boas_vindas": "Olá{nome}! 👋 Aqui é a {loja}. Assim que o caixa finalizar a sua compra, o comprovante chega por aqui. 🌱",
+    "convite_promocoes": "\n\nQuer receber nossas ofertas de vez em quando? Responda *PROMO*. (Para cancelar a qualquer momento, responda *SAIR*.)",
+    "comprovante_a_caminho": "Recebido{nome}! Seu comprovante está chegando. 🌱",
+    "sem_comprovante": "Não encontramos comprovante recente para este número. Se você acabou de comprar, peça ao caixa para enviar. 🙂",
+    "promo_aceita": "Pronto{nome}! 🎉 Você vai receber ofertas da {loja} de vez em quando. Para cancelar, é só responder SAIR.",
+    "promo_cancelada": "Tudo certo, você não vai mais receber ofertas da {loja}. Seus comprovantes continuam chegando normalmente."
+  },
+  "promocoes": {
+    "ativo": true,
+    "horario_inicio": "09:00",
+    "horario_fim": "20:00",
+    "intervalo_min_segundos": 8,
+    "intervalo_max_segundos": 20,
+    "limite_diario": 200,
+    "dias_entre_promocoes": 7
+  },
   "whatsapp": {
     "provedor": "simulado",
-
     "cloud_api": {
       "token": "COLE_AQUI_O_TOKEN_PERMANENTE",
       "phone_number_id": "000000000000000",
       "versao_api": "v21.0",
       "template": "",
       "idioma_template": "pt_BR",
-      "parametros_template": ["{loja}"]
+      "parametros_template": [
+        "{loja}"
+      ],
+      "template_promocao": "",
+      "template_promocao_imagem": "",
+      "parametros_template_promocao": [
+        "{texto}"
+      ],
+      "verify_token": "CRIE_UM_TEXTO_SECRETO",
+      "app_secret": "COLE_AQUI_O_APP_SECRET"
     },
-
     "evolution": {
       "url_base": "http://localhost:8080",
       "instancia": "minha-loja",
-      "apikey": "COLE_AQUI_A_APIKEY"
+      "apikey": "COLE_AQUI_A_APIKEY",
+      "webhook_token": "CRIE_UM_TEXTO_SECRETO"
     }
   },
-
   "painel": {
     "ativo": false,
     "host": "127.0.0.1",

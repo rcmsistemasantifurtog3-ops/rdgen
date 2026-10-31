@@ -34,6 +34,7 @@ class Bandeja:
                  checked=lambda _i: self.pausado()),
             Menu.SEPARATOR,
             Item("Relatório do mês", lambda: self.acoes["relatorio"]()),
+            Item("Promoções", lambda: self.acoes["promocoes"]()),
             Item("Abrir painel web", lambda: self.acoes["painel"](),
                  visible=lambda _i: self.painel_ativo()),
             Item("Configurações", lambda: self.acoes["configuracoes"]()),

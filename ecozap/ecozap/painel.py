@@ -17,16 +17,26 @@ import logging
 import re
 import threading
 import urllib.request
-from datetime import date
+from datetime import date, datetime
+from email.parser import BytesParser
+from email.policy import default as politica_email
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import __version__, relatorio, telefone as tel
+from . import __version__, cartaz, relatorio, telefone as tel, webhook
 from .servico import EcoZap
 
 log = logging.getLogger("ecozap.painel")
 _ID = re.compile(r"^[\w-]{1,64}$")
+LIMITE_CORPO = 8 * 1024 * 1024
+ACOES = {"comprovante_por_codigo": "📄 enviou o comprovante (código)",
+         "comprovante_associado": "📄 enviou o comprovante pendente",
+         "segunda_via": "📄 enviou 2ª via", "aguardando_caixa": "⏳ caixa precisa escolher",
+         "boas_vindas": "👋 boas-vindas", "promocoes_aceita": "🎉 aceitou promoções",
+         "promocoes_cancelada": "🚫 saiu das promoções", "registrada": "registrada"}
+STATUS_CAMPANHA = {"agendada": "🕒 Agendada", "enviando": "📤 Enviando", "pausada": "⏸ Pausada",
+                   "concluida": "✅ Concluída", "cancelada": "✖ Cancelada"}
 STATUS_ROTULO = {"pendente": "⏳ Pendente", "enviado": "✅ Enviado", "erro": "❌ Erro",
                  "salvo": "💾 Salvo", "descartado": "🗑 Descartado"}
 
@@ -53,6 +63,7 @@ def _e(valor) -> str:
 class _Handler(BaseHTTPRequestHandler):
     server_version = f"EcoZap/{__version__}"
     eco: EcoZap  # preenchido pela classe Painel
+    disparador = None
 
     # ---------- infraestrutura ----------
     def log_message(self, formato, *args):
@@ -93,12 +104,77 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Location", destino)
         self.end_headers()
 
+    def _corpo(self) -> bytes:
+        tamanho = int(self.headers.get("Content-Length") or 0)
+        if tamanho > LIMITE_CORPO:
+            raise ValueError("Envio grande demais (máximo 8 MB)")
+        return self.rfile.read(tamanho)
+
     def _form(self) -> dict:
-        tamanho = min(int(self.headers.get("Content-Length") or 0), 100_000)
-        bruto = self.rfile.read(tamanho).decode("utf-8", "replace")
-        if self.headers.get("Content-Type", "").startswith("application/json"):
-            return json.loads(bruto or "{}")
-        return {k: v[0] for k, v in parse_qs(bruto).items()}
+        """Lê formulário comum, JSON ou multipart (com arquivo). Arquivos vêm como bytes."""
+        tipo = self.headers.get("Content-Type", "")
+        bruto = self._corpo()
+        if tipo.startswith("application/json"):
+            return json.loads(bruto or b"{}")
+        if tipo.startswith("multipart/form-data"):
+            msg = BytesParser(policy=politica_email).parsebytes(
+                f"Content-Type: {tipo}\r\n\r\n".encode() + bruto)
+            dados = {}
+            for parte in msg.iter_parts():
+                nome = parte.get_param("name", header="content-disposition")
+                if not nome:
+                    continue
+                conteudo = parte.get_payload(decode=True) or b""
+                dados[nome] = conteudo if parte.get_filename() else conteudo.decode("utf-8", "replace")
+            return dados
+        return {k: v[0] for k, v in parse_qs(bruto.decode("utf-8", "replace")).items()}
+
+    # ---------- webhooks (não usam a senha do painel: têm token/assinatura próprios) ----------
+    def _webhook_get(self, q: dict) -> bool:
+        if urlparse(self.path).path != "/webhook/whatsapp":
+            return False
+        esperado = self.eco.cfg["whatsapp"]["cloud_api"].get("verify_token", "")
+        if q.get("hub.mode") == "subscribe" and webhook.token_valido(q.get("hub.verify_token"), esperado):
+            self._responder(q.get("hub.challenge", ""), "text/plain")
+        else:
+            self._responder("token inválido", "text/plain", HTTPStatus.FORBIDDEN)
+        return True
+
+    def _webhook_post(self) -> bool:
+        url = urlparse(self.path)
+        if url.path not in ("/webhook/whatsapp", "/webhook/evolution"):
+            return False
+        corpo = self._corpo()
+        wa = self.eco.cfg["whatsapp"]
+        if url.path == "/webhook/whatsapp":
+            ok = webhook.assinatura_valida(corpo, self.headers.get("X-Hub-Signature-256"),
+                                           wa["cloud_api"].get("app_secret", ""))
+            leitor = webhook.ler_cloud
+        else:
+            token = parse_qs(url.query).get("token", [None])[0] or self.headers.get("X-EcoZap-Token")
+            ok = webhook.token_valido(token, wa["evolution"].get("webhook_token", ""))
+            leitor = webhook.ler_evolution
+        if not ok:
+            log.warning("Webhook recusado (assinatura/token inválido) de %s", self.address_string())
+            self._responder("não autorizado", "text/plain", HTTPStatus.FORBIDDEN)
+            return True
+        try:
+            mensagens, status = leitor(json.loads(corpo or b"{}"))
+        except (ValueError, KeyError, TypeError):
+            self._responder("json inválido", "text/plain", HTTPStatus.BAD_REQUEST)
+            return True
+        self._responder("ok", "text/plain")  # responde logo: a Meta exige resposta rápida
+
+        def processar():
+            for st in status:
+                self.eco.receber_status(st)
+            for m in mensagens:
+                try:
+                    self.eco.receber_mensagem(m)
+                except Exception:
+                    log.exception("Erro ao tratar mensagem de %s", m.telefone)
+        threading.Thread(target=processar, name="webhook", daemon=True).start()
+        return True
 
     def _negar(self):
         self._responder("Acesso negado", "text/plain; charset=utf-8", HTTPStatus.UNAUTHORIZED,
@@ -106,11 +182,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ---------- rotas ----------
     def do_GET(self):
-        if not self._autorizado():
-            return self._negar()
         url = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
+        if self._webhook_get(q):
+            return
+        if not self._autorizado():
+            return self._negar()
         try:
+            if url.path == "/promocoes":
+                return self._promocoes(q)
+            if url.path == "/mensagens":
+                return self._mensagens()
+            if url.path == "/cartaz":
+                return self._responder(cartaz.gerar_pdf(self.eco.cfg), "application/pdf",
+                                       extra={"Content-Disposition": 'inline; filename="cartaz-ecozap.pdf"'})
             if url.path == "/":
                 return self._pagina_inicial(q)
             if url.path.startswith("/pdf/"):
@@ -129,11 +214,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._responder(_e(e), "text/plain; charset=utf-8", HTTPStatus.BAD_REQUEST)
 
     def do_POST(self):
+        try:
+            if self._webhook_post():
+                return
+        except ValueError as e:
+            return self._responder(str(e), "text/plain", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         if not self._autorizado():
             return self._negar()
         if not self._mesma_origem():
             return self._responder("Origem não permitida", "text/plain", HTTPStatus.FORBIDDEN)
         url = urlparse(self.path)
+        if url.path.startswith("/promocoes"):
+            return self._post_promocoes(url.path)
         dados = self._form()
         api = url.path.startswith("/api/")
         ident = dados.get("id") if api else url.path.rsplit("/", 1)[-1]
@@ -180,7 +272,8 @@ class _Handler(BaseHTTPRequestHandler):
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{_e(titulo)}</title>
 <style>{_CSS}</style></head><body>
 <header><h1>🌱 EcoZap</h1><span>{_e(cfg['nome_loja'])} · {_e(cfg.get('identificacao_caixa', ''))}</span>
-<nav><a href="/">Comprovantes</a><a href="/geral">Visão geral</a>
+<nav><a href="/">Comprovantes</a><a href="/mensagens">Mensagens</a><a href="/promocoes">Promoções</a>
+<a href="/geral">Visão geral</a><a href="/cartaz">Cartaz do balcão</a>
 <a href="/relatorio">Relatório do mês (PDF)</a><a href="/relatorio?tipo=jpg">Imagem para redes</a></nav></header>
 <main>{corpo}</main>
 <script>/* atualiza a lista a cada 30 s, se você não estiver digitando */
@@ -198,11 +291,12 @@ setInterval(()=>{{const a=document.activeElement;if(!a||!['INPUT','SELECT'].incl
                              for f in ("pdf", "jpeg", "png"))
             nota = f'<a href="{_e(c.link_nfce)}" target="_blank" rel="noopener">🧾 nota</a>' if c.link_nfce else ""
             erro = f'<div class="cinza">{_e(c.ultimo_erro)}</div>' if c.status == "erro" else ""
-            linhas.append(f"""<tr><td>{_e(c.criado_em.replace('T', ' '))}</td>
-<td>{STATUS_ROTULO.get(c.status, _e(c.status))}{erro}</td><td>{_e(c.origem)} {nota}</td>
+            entrega = f'<div class="cinza">{_e(c.entrega)}</div>' if c.entrega and c.status == "enviado" else ""
+            linhas.append(f"""<tr><td>{_e(c.criado_em.replace('T', ' '))}<div class="cinza">código {_e(c.codigo)}</div></td>
+<td>{STATUS_ROTULO.get(c.status, _e(c.status))}{erro}{entrega}</td><td>{_e(c.origem)} {nota}</td>
 <td><a href="/pdf/{_e(c.id)}" target="_blank">abrir</a></td>
 <td><form method="post" action="/enviar/{_e(c.id)}" style="display:flex;gap:4px;flex-wrap:wrap">
-<input name="telefone" placeholder="(11) 98765-4321" value="{_e(tel.formatar(c.telefone) if c.telefone else '')}" size="18">
+<input name="telefone" list="recentes" placeholder="(11) 98765-4321" value="{_e(tel.formatar(c.telefone) if c.telefone else '')}" size="18">
 <input name="nome" placeholder="Nome" value="{_e(c.nome)}" size="14">
 <select name="formato">{opcoes}</select><button>📲 Enviar</button></form></td>
 <td><form method="post" action="/descartar/{_e(c.id)}"><button style="background:#999">✕</button></form></td></tr>""")
@@ -213,7 +307,9 @@ setInterval(()=>{{const a=document.activeElement;if(!a||!['INPUT','SELECT'].incl
             aviso = f'<div class="msg erro">Erro: {_e(q["erro"])}</div>'
         filtros = "".join(f'<option value="{s}"{" selected" if s == status else ""}>{r}</option>'
                           for s, r in [("", "Todos")] + list(STATUS_ROTULO.items()))
-        corpo = f"""{aviso}<div class="cards">
+        recentes = "".join(f'<option value="{_e(tel.formatar(m.telefone))}">{_e(m.nome or "")} - {_e((m.texto or "")[:30])}</option>'
+                           for m in arm.mensagens_recentes(30))
+        corpo = f"""{aviso}<datalist id="recentes">{recentes}</datalist><div class="cards">
 <div class="card"><b>{est['pendentes']}</b>pendentes / com erro</div>
 <div class="card"><b>{est['enviados']}</b>comprovantes digitais</div>
 <div class="card"><b>{est['papel_economizado_m']} m</b>de papel economizados</div>
@@ -259,6 +355,79 @@ setInterval(()=>{{const a=document.activeElement;if(!a||!['INPUT','SELECT'].incl
         self._responder(self._layout("EcoZap - visão geral", corpo))
 
 
+    # ---------- mensagens e promoções ----------
+    def _mensagens(self):
+        linhas = "".join(
+            f"<tr><td>{_e(m.recebida_em.replace('T', ' '))}</td><td>{_e(tel.formatar(m.telefone))}</td>"
+            f"<td>{_e(m.nome)}</td><td>{_e(m.texto)}</td><td>{_e(ACOES.get(m.acao or '', m.acao))}</td></tr>"
+            for m in self.eco.armazenamento.mensagens_recentes(24 * 60, 300))
+        corpo = f"""<h2>Mensagens recebidas (últimas 24h)</h2>
+<p class="cinza">Quem escreveu nas últimas 24h pode receber comprovante sem template (atendimento gratuito na API oficial).</p>
+<table><tr><th>Quando</th><th>WhatsApp</th><th>Nome</th><th>Mensagem</th><th>O que o EcoZap fez</th></tr>
+{linhas or '<tr><td colspan="5">Nenhuma mensagem. Configure o webhook (veja o README).</td></tr>'}</table>"""
+        self._responder(self._layout("EcoZap - mensagens", corpo))
+
+    def _promocoes(self, q: dict):
+        from .promocoes import Disparador
+        disp = self.disparador or Disparador(self.eco)
+        arm = self.eco.armazenamento
+        linhas = []
+        for c in arm.listar_campanhas():
+            botoes = ""
+            if c.status in ("agendada", "enviando"):
+                botoes += f'<form method="post" action="/promocoes/pausar/{c.id}" style="display:inline"><button>⏸</button></form> '
+            if c.status == "pausada":
+                botoes += f'<form method="post" action="/promocoes/retomar/{c.id}" style="display:inline"><button>▶</button></form> '
+            if c.status in ("agendada", "enviando", "pausada"):
+                botoes += f'<form method="post" action="/promocoes/cancelar/{c.id}" style="display:inline"><button style="background:#999">✖</button></form>'
+            linhas.append(f"<tr><td>{c.id}</td><td>{_e(c.titulo)}<div class='cinza'>{_e(c.texto[:80])}</div></td>"
+                          f"<td>{STATUS_CAMPANHA.get(c.status, _e(c.status))}</td><td>{_e(c.agendada_para.replace('T', ' '))}</td>"
+                          f"<td>{c.enviados}/{c.total}<div class='cinza'>{c.falhas} falha(s), {c.pulados} pulado(s)</div></td>"
+                          f"<td>{botoes}</td></tr>")
+        cfg = self.eco.cfg["promocoes"]
+        aviso = f'<div class="msg">{_e(q["msg"])}</div>' if q.get("msg") else ""
+        if q.get("erro"):
+            aviso = f'<div class="msg erro">Erro: {_e(q["erro"])}</div>'
+        corpo = f"""{aviso}<div class="cards"><div class="card"><b>{disp.previa()}</b>clientes podem receber agora</div>
+<div class="card"><b>{arm.promocoes_enviadas_hoje()}/{cfg['limite_diario']}</b>enviadas hoje</div>
+<div class="card"><b>{_e(cfg['horario_inicio'])}–{_e(cfg['horario_fim'])}</b>horário de envio</div></div>
+<h2>Nova promoção</h2>
+<form method="post" action="/promocoes/criar" enctype="multipart/form-data" style="display:grid;gap:8px;max-width:640px">
+<input name="titulo" placeholder="Título interno (ex.: Black Friday)" required>
+<textarea name="texto" rows="5" placeholder="Olá{{nome}}! Só hoje: pão francês com 20% de desconto 🥖" required></textarea>
+<label>Imagem (opcional): <input type="file" name="imagem" accept="image/*"></label>
+<label>Só para quem comprou nos últimos <input name="dias_recentes" type="number" min="1" size="4"> dias (vazio = todos que aceitaram)</label>
+<label>Agendar para: <input name="agendar" type="datetime-local"> (vazio = agora)</label>
+<button>Criar promoção</button></form>
+<p class="cinza">Só recebe quem respondeu PROMO (ou autorizou no balcão). Toda mensagem termina com "responda SAIR".
+No máximo 1 promoção a cada {cfg['dias_entre_promocoes']} dias por cliente. Use {{nome}} e {{loja}} no texto.</p>
+<h2>Campanhas</h2><table><tr><th>#</th><th>Promoção</th><th>Situação</th><th>Quando</th><th>Enviadas</th><th></th></tr>
+{''.join(linhas) or '<tr><td colspan="6">Nenhuma campanha ainda.</td></tr>'}</table>"""
+        self._responder(self._layout("EcoZap - promoções", corpo))
+
+    def _post_promocoes(self, caminho: str):
+        from .promocoes import Disparador
+        disp = self.disparador or Disparador(self.eco)
+        try:
+            dados = self._form()
+            partes = caminho.strip("/").split("/")
+            if partes[1:2] == ["criar"]:
+                agendar = dados.get("agendar") or ""
+                camp = disp.criar(dados.get("titulo", ""), dados.get("texto", ""),
+                                  dados.get("imagem") or None,
+                                  int(dados["dias_recentes"]) if dados.get("dias_recentes") else None,
+                                  datetime.fromisoformat(agendar) if agendar else None)
+                msg = f"Promoção criada para {camp.total} cliente(s)"
+            elif len(partes) == 3 and partes[1] in ("pausar", "retomar", "cancelar") and partes[2].isdigit():
+                getattr(disp, partes[1])(int(partes[2]))
+                msg = "Campanha atualizada"
+            else:
+                return self._responder("Ação desconhecida", "text/plain", HTTPStatus.NOT_FOUND)
+        except Exception as e:
+            return self._redirecionar(f"/promocoes?erro={quote(str(e))}")
+        self._redirecionar(f"/promocoes?msg={quote(msg)}")
+
+
 def buscar_remoto(caixa: dict) -> tuple[dict | None, str | None]:
     """Busca /api/estatisticas de outro caixa. Retorna (dados, erro)."""
     req = urllib.request.Request(caixa["url"].rstrip("/") + "/api/estatisticas")
@@ -273,8 +442,9 @@ def buscar_remoto(caixa: dict) -> tuple[dict | None, str | None]:
 
 
 class Painel:
-    def __init__(self, eco: EcoZap):
+    def __init__(self, eco: EcoZap, disparador=None):
         self.eco = eco
+        self.disparador = disparador
         self._servidor: ThreadingHTTPServer | None = None
 
     @property
@@ -286,7 +456,7 @@ class Painel:
 
     def iniciar(self) -> None:
         p = self.eco.cfg["painel"]
-        handler = type("Handler", (_Handler,), {"eco": self.eco})
+        handler = type("Handler", (_Handler,), {"eco": self.eco, "disparador": self.disparador})
         self._servidor = ThreadingHTTPServer((p["host"], int(p["porta"])), handler)
         threading.Thread(target=self._servidor.serve_forever, name="painel", daemon=True).start()
         log.info("Painel web em %s", self.endereco)

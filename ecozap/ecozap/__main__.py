@@ -10,6 +10,11 @@
     ecozap clientes [busca]         mostra a agenda de clientes
     ecozap esquecer TELEFONE        apaga um cliente da agenda (LGPD)
     ecozap limpar                   apaga os comprovantes mais velhos que a retenção
+    ecozap cartaz                   gera o cartaz do balcão (QR Code do WhatsApp da loja)
+    ecozap mensagens                mensagens recebidas nas últimas 24h
+    ecozap promocao criar --titulo T --texto X [--imagem I] [--dias-recentes N] [--agendar "AAAA-MM-DD HH:MM"]
+    ecozap promocao listar | previa | pausar ID | retomar ID | cancelar ID
+    ecozap promocao autorizar TELEFONE   cliente autorizou promoções no balcão
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ import logging.handlers
 import signal
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__, config, relatorio, telefone as tel
@@ -71,11 +77,16 @@ def _servico(eco: EcoZap) -> None:
             log.warning("Sem telefone no comprovante %s - ficou pendente (envie pelo painel)", comp.id)
 
     eco.limpar()
+    from .promocoes import Disparador
+    disparador = Disparador(eco)
+    disparador.iniciar()
     painel = None
     if eco.cfg["painel"]["ativo"]:
         from .painel import Painel
-        painel = Painel(eco)
+        painel = Painel(eco, disparador)
         painel.iniciar()
+    else:
+        log.warning("Painel web desligado: o EcoZap não vai receber mensagens dos clientes (webhook)")
     mon = Monitor(eco.cfg["pasta_entrada"], ao_receber, pausado=eco.pausado)
     mon.iniciar()
     parar = threading.Event()
@@ -85,8 +96,43 @@ def _servico(eco: EcoZap) -> None:
     while not parar.wait(6 * 60 * 60):
         eco.limpar()
     mon.parar()
+    disparador.parar()
     if painel:
         painel.parar()
+
+
+def _promocao(eco: EcoZap, args) -> int:
+    from .promocoes import Disparador
+    disp, arm = Disparador(eco), eco.armazenamento
+    if args.acao == "criar":
+        if not (args.titulo and args.texto):
+            print("Use --titulo e --texto")
+            return 1
+        imagem = Path(args.imagem).read_bytes() if args.imagem else None
+        quando = datetime.strptime(args.agendar, "%Y-%m-%d %H:%M") if args.agendar else None
+        camp = disp.criar(args.titulo, args.texto.replace("\\n", "\n"), imagem, args.dias_recentes, quando)
+        print(f"Campanha {camp.id} criada para {camp.total} cliente(s). "
+              "Ela é enviada pelo EcoZap aberto (interface ou serviço).")
+    elif args.acao == "listar":
+        for c in arm.listar_campanhas():
+            print(f"#{c.id:<4} {c.status:<10} {c.enviados}/{c.total} enviadas  "
+                  f"({c.falhas} falhas, {c.pulados} puladas)  {c.agendada_para.replace('T', ' ')}  {c.titulo}")
+    elif args.acao == "previa":
+        print(f"{disp.previa(args.dias_recentes)} cliente(s) receberiam uma promoção agora.")
+    elif args.acao == "autorizar":
+        numero = tel.normalizar(args.alvo or "")
+        if not numero:
+            print("Telefone inválido")
+            return 1
+        arm.definir_promocoes(numero, True, "balcão (autorizado pelo cliente)")
+        print(f"{tel.formatar(numero)} vai receber promoções.")
+    else:
+        if not (args.alvo or "").isdigit():
+            print("Informe o ID da campanha")
+            return 1
+        getattr(disp, args.acao)(int(args.alvo))
+        print("Campanha atualizada.")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,6 +163,17 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("esquecer", help="apaga um cliente da agenda (LGPD)")
     p.add_argument("telefone")
     sub.add_parser("limpar", help="apaga comprovantes antigos")
+    p = sub.add_parser("cartaz", help="gera o cartaz do balcão em PDF")
+    p.add_argument("--saida", help="arquivo PDF (padrão: <pasta_dados>/cartaz-ecozap.pdf)")
+    sub.add_parser("mensagens", help="mensagens recebidas nas últimas 24h")
+    p = sub.add_parser("promocao", help="campanhas de promoção")
+    p.add_argument("acao", choices=["criar", "listar", "previa", "pausar", "retomar", "cancelar", "autorizar"])
+    p.add_argument("alvo", nargs="?", help="ID da campanha ou telefone")
+    p.add_argument("--titulo")
+    p.add_argument("--texto")
+    p.add_argument("--imagem")
+    p.add_argument("--dias-recentes", type=int)
+    p.add_argument("--agendar", help='"AAAA-MM-DD HH:MM"')
     args = ap.parse_args(argv)
 
     try:
@@ -185,6 +242,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Cliente {tel.formatar(numero)} apagado da agenda.")
         elif args.comando == "limpar":
             print(f"{eco.limpar()} comprovante(s) apagado(s)")
+        elif args.comando == "cartaz":
+            from . import cartaz
+            destino = Path(args.saida or Path(cfg["pasta_dados"]) / "cartaz-ecozap.pdf")
+            destino.write_bytes(cartaz.gerar_pdf(cfg))
+            print(f"Cartaz: {destino}")
+        elif args.comando == "mensagens":
+            for m in eco.armazenamento.mensagens_recentes(24 * 60, 200):
+                print(f"{m.recebida_em.replace('T', ' ')}  {tel.formatar(m.telefone):<20} "
+                      f"{(m.nome or '-')[:18]:<18} {m.acao or '':<24} {(m.texto or '')[:50]}")
+        elif args.comando == "promocao":
+            return _promocao(eco, args)
     except Exception as e:
         log.debug("Erro", exc_info=True)
         print(f"Erro: {e}", file=sys.stderr)

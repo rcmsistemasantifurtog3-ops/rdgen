@@ -32,6 +32,10 @@ def normalizar(numero: str) -> str | None:
     ddd = d[2:4]
     if ddd[0] == "0" or ddd[1] == "0":
         return None
+    if len(d) == 12 and d[4] in "6789":
+        # celular no formato antigo, sem o 9 (o WhatsApp ainda manda assim em
+        # números antigos). Fixos começam com 2-5. Padronizamos COM o 9.
+        d = d[:4] + "9" + d[4:]
     if len(d) == 13 and d[4] != "9":  # celular com 9 dígitos começa com 9
         return None
     return d

@@ -8,11 +8,39 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+from typing import Callable
+
 from . import clientes, conversor, nfce, telefone as tel
 from .armazenamento import Armazenamento, Comprovante
+from .webhook import MensagemRecebida, StatusEntrega
 from .whatsapp import ErroEnvio, Provedor, criar_provedor
 
 log = logging.getLogger("ecozap")
+
+
+PALAVRAS_SAIR = {"SAIR", "PARAR", "STOP", "CANCELAR", "DESCADASTRAR", "NAO QUERO", "NAO QUERO PROMO"}
+PALAVRAS_PROMO = {"PROMO", "PROMOCAO", "PROMOCOES", "OFERTA", "OFERTAS", "QUERO PROMO",
+                  "QUERO PROMOCOES", "QUERO OFERTAS"}
+PALAVRAS_SEGUNDA_VIA = ("2 VIA", "2A VIA", "SEGUNDA VIA", "COMPROVANTE", "RECIBO", "NOTA", "CUPOM")
+_CODIGO = re.compile(r"\b([A-HJ-NP-Z2-9]{4})\b")
+
+
+def normalizar_texto(texto: str) -> str:
+    texto = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().upper()
+    texto = re.sub(r"[^A-Z0-9 ]+", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def traduzir_erro(msg: str) -> str:
+    """Deixa os erros mais comuns da Meta em português claro."""
+    if "131047" in msg or "Re-engagement" in msg or "24 hours" in msg:
+        return ("Fora da janela de 24h: o cliente precisa mandar uma mensagem para a loja "
+                "primeiro (cartaz do balcão), ou configure um template aprovado. " + msg)
+    if "131026" in msg:
+        return "Este número não tem WhatsApp ou não pode receber mensagens. " + msg
+    if "190" in msg and "token" in msg.lower():
+        return "Token da Cloud API inválido ou expirado. " + msg
+    return msg
 
 
 def _slug(texto: str) -> str:
@@ -28,6 +56,7 @@ class EcoZap:
         self.resumo_cpf = clientes.ResumoCPF(cfg["pasta_dados"])
         self._provedor = provedor
         self.pausado = threading.Event()  # pausa o recebimento (menu da bandeja)
+        self.ouvintes: list[Callable[[str, object], None]] = []  # avisos para a tela
 
     @property
     def provedor(self) -> Provedor:
@@ -91,14 +120,37 @@ class EcoZap:
                 "chave": (comp.chave_nfce if comp else "") or "",
                 "caixa": self.cfg.get("identificacao_caixa", "")}
 
-    def legenda(self, nome: str | None, comp: Comprovante | None = None) -> str:
+    def _avisar(self, evento: str, dados: object) -> None:
+        for ouvinte in list(self.ouvintes):
+            try:
+                ouvinte(evento, dados)
+            except Exception:
+                log.debug("ouvinte falhou", exc_info=True)
+
+    def _formatar(self, modelo: str, comp=None, nome=None) -> str:
+        try:
+            return modelo.format(**self._valores(comp, nome))
+        except (KeyError, IndexError, ValueError):
+            return modelo  # texto com chaves "{...}" desconhecidas: manda como está
+
+    def legenda(self, nome: str | None, comp: Comprovante | None = None,
+                convidar: bool = False) -> str:
         v = self._valores(comp, nome)
-        texto = self.cfg["mensagem"].format(**v)
+        texto = self._formatar(self.cfg["mensagem"], comp, nome)
         if v["link"]:
-            texto += self.cfg.get("mensagem_nfce", "").format(**v)
+            texto += self._formatar(self.cfg.get("mensagem_nfce", ""), comp, nome)
         elif v["chave"]:  # sem link, ao menos a chave para consultar no portal
-            texto += self.cfg.get("mensagem_chave", "").format(**v)
+            texto += self._formatar(self.cfg.get("mensagem_chave", ""), comp, nome)
+        if convidar:
+            texto += self.cfg["atendimento"]["convite_promocoes"]
         return texto
+
+    def _deve_convidar(self, telefone: str) -> bool:
+        """Convida para promoções só quem nunca respondeu (nem PROMO, nem SAIR)."""
+        if not self.cfg["promocoes"]["ativo"]:
+            return False
+        cli = self.armazenamento.cliente_por_telefone(telefone)
+        return not (cli and cli.consentimento_em)
 
     def enviar(self, ident: str, telefone: str | None = None, nome: str | None = None,
                formato: str | None = None) -> Comprovante:
@@ -118,21 +170,108 @@ class EcoZap:
         data = datetime.fromisoformat(comp.criado_em).strftime("%Y%m%d-%H%M")
         nome_arquivo = f"comprovante-{_slug(self.cfg['nome_loja'])}-{data}.{ext}"
         try:
-            kwargs = {}
+            provedor = self.provedor
+            janela = self.armazenamento.janela_aberta(numero)
             cloud = self.cfg["whatsapp"]["cloud_api"]
-            if self.provedor.nome == "cloud_api" and cloud.get("template"):
-                v = self._valores(comp, nome)
-                kwargs["parametros_template"] = [
-                    (p.format(**v) or "-") for p in cloud.get("parametros_template", ["{loja}"])]
-            msg_id = self.provedor.enviar(numero, conteudo, nome_arquivo, mime,
-                                          self.legenda(nome, comp), **kwargs)
+            template = params = None
+            if getattr(provedor, "exige_template_fora_da_janela", False) and not janela and cloud.get("template"):
+                template = cloud["template"]
+                params = [self._formatar(p, comp, nome) for p in cloud.get("parametros_template", ["{loja}"])]
+            convidar = (template is None) and self._deve_convidar(numero)
+            msg_id = provedor.enviar(numero, conteudo, nome_arquivo, mime,
+                                     self.legenda(nome, comp, convidar),
+                                     template=template, parametros_template=params)
         except (ErroEnvio, OSError) as e:
-            self.armazenamento.registrar_envio(ident, False, str(e))
-            log.error("Falha ao enviar %s para %s: %s", ident, numero, e)
-            raise ErroEnvio(str(e)) from e
-        self.armazenamento.registrar_envio(ident, True)
-        log.info("Comprovante %s enviado para %s (%s)", ident, numero, msg_id)
-        return self.armazenamento.obter(ident)
+            erro = traduzir_erro(str(e))
+            self.armazenamento.registrar_envio(ident, False, erro)
+            log.error("Falha ao enviar %s para %s: %s", ident, numero, erro)
+            self._avisar("erro_envio", self.armazenamento.obter(ident))
+            raise ErroEnvio(erro) from e
+        self.armazenamento.registrar_envio(ident, True, msg_id=msg_id)
+        log.info("Comprovante %s enviado para %s (%s%s)", ident, numero, msg_id,
+                 ", template" if template else "")
+        comp = self.armazenamento.obter(ident)
+        self._avisar("enviado", comp)
+        return comp
+
+    # 4) atendimento: o cliente escreveu para a loja
+    def responder(self, telefone: str, modelo: str, nome: str | None = None) -> bool:
+        """Resposta automática (texto livre: o cliente acabou de escrever)."""
+        if not self.cfg["atendimento"]["respostas_automaticas"] or not modelo:
+            return False
+        try:
+            self.provedor.enviar_texto(telefone, self._formatar(modelo, None, nome))
+            self.armazenamento.marcar_resposta_auto(telefone)
+            return True
+        except Exception as e:
+            log.warning("Resposta automática para %s falhou: %s", telefone, e)
+            return False
+
+    def receber_mensagem(self, m: MensagemRecebida) -> str:
+        """Decide o que fazer com a mensagem do cliente. Retorna a ação tomada."""
+        numero = tel.normalizar(m.telefone)
+        if not numero:
+            return "ignorada"
+        arm, at = self.armazenamento, self.cfg["atendimento"]
+        ident = arm.registrar_mensagem(numero, m.nome, m.texto, m.quando)
+        cli = arm.cliente_por_telefone(numero)
+        nome = (cli.nome_exibicao if cli else None) or m.nome
+        texto = normalizar_texto(m.texto)
+        acao = "registrada"
+
+        if texto in PALAVRAS_SAIR or texto.startswith("SAIR"):
+            arm.definir_promocoes(numero, False, f"whatsapp: {m.texto[:40]}")
+            self.responder(numero, at["promo_cancelada"], nome)
+            acao = "promocoes_cancelada"
+        elif texto in PALAVRAS_PROMO:
+            arm.definir_promocoes(numero, True, f"whatsapp: {m.texto[:40]}")
+            self.responder(numero, at["promo_aceita"], nome)
+            acao = "promocoes_aceita"
+        else:
+            acao = self._entregar_comprovante(numero, nome, m.texto, texto)
+        arm.marcar_acao_mensagem(ident, acao)
+        log.info("Mensagem de %s: %r -> %s", numero, (m.texto or "")[:60], acao)
+        self._avisar("mensagem", {"telefone": numero, "nome": nome, "texto": m.texto, "acao": acao})
+        return acao
+
+    def _entregar_comprovante(self, numero: str, nome: str | None, original: str, texto: str) -> str:
+        arm, at = self.armazenamento, self.cfg["atendimento"]
+        # a) mandou o código do comprovante (aparece na tela do caixa)
+        for codigo in _CODIGO.findall(original.upper()):
+            comp = arm.por_codigo(codigo)
+            if comp and (comp.telefone in (None, numero)):
+                return self._tentar_enviar(comp.id, numero, nome, "comprovante_por_codigo")
+        # b) só existe UM comprovante esperando cliente nos últimos minutos: é dele
+        pendentes = arm.pendentes_sem_telefone(int(at["minutos_associacao"]))
+        if len(pendentes) == 1:
+            return self._tentar_enviar(pendentes[0].id, numero, nome, "comprovante_associado")
+        if len(pendentes) > 1:  # o caixa escolhe na tela (lista "mensagens recentes")
+            if arm.pode_responder_auto(numero, horas=1):
+                self.responder(numero, at["comprovante_a_caminho"], nome)
+            return "aguardando_caixa"
+        # c) pediu segunda via
+        if any(p in texto for p in PALAVRAS_SEGUNDA_VIA):
+            ultimo = arm.ultimo_do_telefone(numero)
+            if ultimo:
+                return self._tentar_enviar(ultimo.id, numero, nome, "segunda_via")
+        # d) só disse oi: boas-vindas (no máximo 1 a cada 12h)
+        if arm.pode_responder_auto(numero):
+            modelo = at["boas_vindas"] + (at["convite_promocoes"] if self._deve_convidar(numero) else "")
+            if self.responder(numero, modelo, nome):
+                return "boas_vindas"
+        return "registrada"
+
+    def _tentar_enviar(self, ident: str, numero: str, nome: str | None, acao: str) -> str:
+        try:
+            self.enviar(ident, numero, nome)
+            return acao
+        except Exception as e:
+            log.error("Não consegui entregar %s para %s: %s", ident, numero, e)
+            return f"{acao}_falhou"
+
+    def receber_status(self, s: StatusEntrega) -> None:
+        if self.armazenamento.atualizar_entrega(s.msg_id, s.entrega):
+            self._avisar("entrega", s)
 
     def marcar(self, ident: str, status: str) -> None:
         self.armazenamento.atualizar(ident, status=status)

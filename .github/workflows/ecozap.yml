@@ -67,7 +67,7 @@ jobs:
           & $cli --versao
           $tmp = Join-Path $env:RUNNER_TEMP "ecozap-teste"
           New-Item -ItemType Directory -Force $tmp | Out-Null
-          @{ pasta_dados = "$tmp\dados"; pasta_entrada = "$tmp\entrada" } | ConvertTo-Json |
+          @{ pasta_dados = "$tmp\dados"; pasta_entrada = "$tmp\entrada"; numero_loja = "11933334444" } | ConvertTo-Json |
             Set-Content -Encoding utf8 "$tmp\config.json"
           "TOTAL R`$ 10,00`nCel: (11) 98765-4321`n[[QR:https://www.nfce.fazenda.sp.gov.br/qrcode?p=1]]`n" |
             Set-Content -Encoding utf8 "$tmp\cupom.txt"
@@ -80,6 +80,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "falha ao enviar PDF" }
           & $cli --config "$tmp\config.json" relatorio --saida "$tmp\rel"
           if ($LASTEXITCODE -ne 0) { throw "falha no relatório" }
+          & $cli --config "$tmp\config.json" promocao autorizar 11987654321
+          & $cli --config "$tmp\config.json" promocao criar --titulo Teste --texto "Oferta teste"
+          if ($LASTEXITCODE -ne 0) { throw "falha ao criar promoção" }
+          & $cli --config "$tmp\config.json" cartaz --saida "$tmp\cartaz.pdf"
+          if ($LASTEXITCODE -ne 0) { throw "falha no cartaz" }
           Get-ChildItem "$tmp\dados\simulado"
 
       - name: Gerar instalador (Inno Setup)

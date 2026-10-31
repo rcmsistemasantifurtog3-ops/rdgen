@@ -23,10 +23,13 @@ from typing import Callable
 
 from PIL import ImageTk
 
-from . import config, conversor, icone, relatorio, telefone as tel
+from datetime import datetime
+
+from . import cartaz, config, conversor, icone, relatorio, telefone as tel
 from .armazenamento import Comprovante
 from .bandeja import Bandeja
 from .monitor import Monitor
+from .promocoes import Disparador
 from .servico import EcoZap
 
 log = logging.getLogger("ecozap.ui")
@@ -147,6 +150,7 @@ class JanelaEnvio(tk.Toplevel):
 
         botoes = ttk.Frame(corpo)
         botoes.grid(row=8, column=1, sticky="we", pady=(8, 0))
+        self._montar_lado_cliente(corpo)
         self.btn_enviar = ttk.Button(botoes, text="📲 Enviar (Enter)", command=self.enviar)
         self.btn_enviar.pack(side="left", padx=(0, 4))
         ttk.Button(botoes, text="Só salvar", command=lambda: self._fechar("salvo")).pack(side="left", padx=4)
@@ -156,6 +160,67 @@ class JanelaEnvio(tk.Toplevel):
         self.bind("<Escape>", lambda _e: self._fechar("salvo"))
         self.protocol("WM_DELETE_WINDOW", lambda: self._fechar("salvo"))
         self.ent_tel.focus_force()
+        self.after(1500, self._vigiar)
+
+    def _montar_lado_cliente(self, corpo) -> None:
+        """Coluna da direita: código/QR para o cliente e quem escreveu agora."""
+        lado = ttk.Frame(corpo)
+        lado.grid(row=0, column=2, rowspan=9, sticky="n", padx=(12, 0))
+        cfg = self.app.eco.cfg
+        ttk.Label(lado, text="Código do comprovante:").pack(anchor="w")
+        tk.Label(lado, text=self.comp.codigo or "-", font=("Consolas", 22, "bold"), fg=VERDE).pack(anchor="w")
+        if cfg.get("numero_loja"):
+            try:
+                link = cartaz.link_whatsapp(cfg["numero_loja"], f"Comprovante {self.comp.codigo}")
+                qr = conversor._imagem_qr(link).resize((150, 150))
+                self._qr = ImageTk.PhotoImage(qr)
+                ttk.Label(lado, image=self._qr).pack(anchor="w", pady=4)
+                ttk.Label(lado, text="Vire a tela: o cliente aponta a\ncâmera e manda a mensagem.",
+                          foreground="gray").pack(anchor="w")
+            except ValueError:
+                pass
+        ttk.Label(lado, text="Escreveram para a loja agora:").pack(anchor="w", pady=(10, 0))
+        self.lista_msgs = tk.Listbox(lado, height=6, width=34)
+        self.lista_msgs.pack(anchor="w")
+        self.lista_msgs.bind("<<ListboxSelect>>", self._escolher_mensagem)
+        self._msgs = []
+        self._atualizar_mensagens()
+
+    def _atualizar_mensagens(self) -> None:
+        msgs = self.app.eco.armazenamento.mensagens_recentes(15)
+        vistos, self._msgs = set(), []
+        for m in msgs:
+            if m.telefone not in vistos:
+                vistos.add(m.telefone)
+                self._msgs.append(m)
+        self.lista_msgs.delete(0, "end")
+        for m in self._msgs:
+            hora = m.recebida_em[11:16]
+            self.lista_msgs.insert("end", f"{hora} {m.nome or tel.formatar(m.telefone)}")
+        if not self._msgs:
+            self.lista_msgs.insert("end", "(ninguém nos últimos 15 min)")
+
+    def _escolher_mensagem(self, _evento=None) -> None:
+        sel = self.lista_msgs.curselection()
+        if sel and sel[0] < len(self._msgs):
+            m = self._msgs[sel[0]]
+            self.var_tel.set(tel.formatar(m.telefone))
+            if m.nome and not self.var_nome.get():
+                self.var_nome.set(m.nome)
+
+    def _vigiar(self) -> None:
+        """Se o cliente mandou mensagem e o EcoZap já enviou sozinho, fecha a janela."""
+        if not self.winfo_exists():
+            return
+        atual = self.app.eco.armazenamento.obter(self.comp.id)
+        if atual and atual.status == "enviado" and self.comp.status != "enviado" \
+                and str(self.btn_enviar.cget("state")) != "disabled":
+            self.lbl_status.configure(text=f"✅ Enviado automaticamente para {tel.formatar(atual.telefone)} "
+                                           "(o cliente escreveu para a loja).", foreground=VERDE)
+            self.after(2500, lambda: self._fechar(None) if self.winfo_exists() else None)
+            return
+        self._atualizar_mensagens()
+        self.after(1500, self._vigiar)
 
     def _preencher(self, cliente) -> None:
         self.var_tel.set(tel.formatar(cliente.telefone))
@@ -224,6 +289,28 @@ class JanelaConfiguracoes(tk.Toplevel):
             (("whatsapp", "evolution", "url_base"), "Evolution - URL", "texto", None),
             (("whatsapp", "evolution", "instancia"), "Evolution - instância", "texto", None),
             (("whatsapp", "evolution", "apikey"), "Evolution - apikey", "senha", None),
+            (("whatsapp", "cloud_api", "verify_token"), "Webhook Cloud - verify token", "senha", None),
+            (("whatsapp", "cloud_api", "app_secret"), "Webhook Cloud - app secret", "senha", None),
+            (("whatsapp", "cloud_api", "template_promocao"), "Cloud API - template de promoção", "texto", None),
+            (("whatsapp", "cloud_api", "template_promocao_imagem"), "Cloud API - template promoção c/ imagem", "texto", None),
+            (("whatsapp", "evolution", "webhook_token"), "Webhook Evolution - token", "senha", None),
+        ],
+        "Atendimento": [
+            (("numero_loja",), "WhatsApp da loja (com DDD)", "texto", None),
+            (("atendimento", "respostas_automaticas"), "Responder automaticamente quem escrever", "booleano", None),
+            (("atendimento", "minutos_associacao"), "Ligar mensagem ao comprovante pendente dos últimos (min)", "numero", None),
+            (("atendimento", "texto_cartaz"), "Mensagem pronta do QR do cartaz", "texto", None),
+            (("atendimento", "boas_vindas"), "Boas-vindas", "longo", None),
+            (("atendimento", "convite_promocoes"), "Convite para promoções", "longo", None),
+        ],
+        "Promoções": [
+            (("promocoes", "ativo"), "Enviar promoções (só para quem aceitou)", "booleano", None),
+            (("promocoes", "horario_inicio"), "Enviar a partir de (HH:MM)", "texto", None),
+            (("promocoes", "horario_fim"), "Enviar até (HH:MM)", "texto", None),
+            (("promocoes", "intervalo_min_segundos"), "Pausa mínima entre envios (s)", "numero", None),
+            (("promocoes", "intervalo_max_segundos"), "Pausa máxima entre envios (s)", "numero", None),
+            (("promocoes", "limite_diario"), "Limite de promoções por dia", "numero", None),
+            (("promocoes", "dias_entre_promocoes"), "No máximo 1 promoção por cliente a cada (dias)", "numero", None),
         ],
         "Painel web": [
             (("painel", "ativo"), "Ativar painel web (reinicie para aplicar)", "booleano", None),
@@ -347,13 +434,29 @@ class JanelaAgenda(tk.Toplevel):
         e.pack(side="left")
         e.bind("<KeyRelease>", lambda _e: self.atualizar())
         ttk.Label(topo, text=" digite nome ou telefone (mín. 2 letras)").pack(side="left")
-        self.tabela = ttk.Treeview(self, columns=("nome", "tel", "envios", "ultimo"), show="headings")
-        for col, titulo, larg in (("nome", "Nome", 170), ("tel", "WhatsApp", 160),
-                                  ("envios", "Envios", 60), ("ultimo", "Último envio", 140)):
+        self.geometry("680x400")
+        self.tabela = ttk.Treeview(self, columns=("nome", "tel", "envios", "promo", "ultimo"), show="headings")
+        for col, titulo, larg in (("nome", "Nome", 170), ("tel", "WhatsApp", 160), ("envios", "Envios", 55),
+                                  ("promo", "Promoções", 90), ("ultimo", "Último contato", 140)):
             self.tabela.heading(col, text=titulo)
             self.tabela.column(col, width=larg)
         self.tabela.pack(fill="both", expand=True, padx=8)
-        ttk.Button(self, text="Esquecer cliente selecionado (LGPD)", command=self.esquecer).pack(pady=8)
+        botoes = ttk.Frame(self)
+        botoes.pack(pady=8)
+        ttk.Button(botoes, text="Cliente autorizou promoções", command=lambda: self.promocoes(True)).pack(side="left")
+        ttk.Button(botoes, text="Tirar das promoções", command=lambda: self.promocoes(False)).pack(side="left", padx=6)
+        ttk.Button(botoes, text="Esquecer cliente (LGPD)", command=self.esquecer).pack(side="left")
+        self.atualizar()
+
+    def promocoes(self, aceita: bool):
+        sel = self.tabela.selection()
+        if not sel:
+            return
+        if aceita and not messagebox.askyesno(
+                "EcoZap", "O cliente autorizou receber promoções pelo WhatsApp?\n"
+                          "(Só marque com a autorização dele.)", parent=self):
+            return
+        self.app.eco.armazenamento.definir_promocoes(sel[0], aceita, "balcão" if aceita else "balcão: retirado")
         self.atualizar()
 
     def atualizar(self):
@@ -362,13 +465,165 @@ class JanelaAgenda(tk.Toplevel):
         termo = self.var.get().strip()
         for c in (arm.buscar_clientes(termo, 100) if termo else arm.listar_clientes(100)):
             self.tabela.insert("", "end", iid=c.telefone, values=(
-                c.nome or "", tel.formatar(c.telefone), c.envios, c.ultimo_envio.replace("T", " ")))
+                c.nome_exibicao or "", tel.formatar(c.telefone), c.envios,
+                "✅ aceita" if c.aceita_promocoes else "-", c.ultimo_envio.replace("T", " ")))
 
     def esquecer(self):
         sel = self.tabela.selection()
         if sel and messagebox.askyesno("EcoZap", "Apagar este cliente da agenda?", parent=self):
             self.app.eco.armazenamento.esquecer_cliente(sel[0])
             self.atualizar()
+
+
+class JanelaMensagens(tk.Toplevel):
+    ACOES = {"comprovante_por_codigo": "enviou comprovante (código)", "comprovante_associado": "enviou comprovante",
+             "segunda_via": "enviou 2ª via", "aguardando_caixa": "caixa precisa escolher",
+             "boas_vindas": "boas-vindas", "promocoes_aceita": "aceitou promoções",
+             "promocoes_cancelada": "saiu das promoções", "registrada": "registrada"}
+
+    def __init__(self, app: "Aplicativo"):
+        super().__init__(app.raiz)
+        self.app = app
+        self.title("EcoZap - Mensagens recebidas (24h)")
+        self.geometry("820x380")
+        app.definir_icone(self)
+        cols = (("quando", "Quando", 130), ("tel", "WhatsApp", 150), ("nome", "Nome", 120),
+                ("texto", "Mensagem", 230), ("acao", "O que o EcoZap fez", 170))
+        self.tabela = ttk.Treeview(self, columns=[c[0] for c in cols], show="headings")
+        for col, titulo, larg in cols:
+            self.tabela.heading(col, text=titulo)
+            self.tabela.column(col, width=larg)
+        self.tabela.pack(fill="both", expand=True, padx=8, pady=8)
+        self.atualizar()
+
+    def atualizar(self):
+        if not self.winfo_exists():
+            return
+        self.tabela.delete(*self.tabela.get_children())
+        for m in self.app.eco.armazenamento.mensagens_recentes(24 * 60, 300):
+            self.tabela.insert("", "end", values=(m.recebida_em.replace("T", " "), tel.formatar(m.telefone),
+                                                  m.nome or "", (m.texto or "")[:80], self.ACOES.get(m.acao or "", m.acao)))
+        self.after(5000, self.atualizar)
+
+
+class JanelaNovaPromocao(tk.Toplevel):
+    def __init__(self, janela: "JanelaPromocoes"):
+        super().__init__(janela)
+        self.janela, self.app = janela, janela.app
+        self.title("Nova promoção")
+        self.transient(janela)  # fica sempre na frente da lista de promoções
+        self.app.definir_icone(self)
+        self.imagem: bytes | None = None
+        f = ttk.Frame(self, padding=12)
+        f.pack(fill="both", expand=True)
+        self.var_titulo, self.var_dias, self.var_agenda = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        ttk.Label(f, text="Título (só para você):").grid(row=0, column=0, sticky="w")
+        ttk.Entry(f, textvariable=self.var_titulo, width=50).grid(row=0, column=1, sticky="w", pady=3)
+        ttk.Label(f, text="Texto da mensagem:").grid(row=1, column=0, sticky="nw")
+        self.texto = tk.Text(f, width=50, height=7, wrap="word")
+        self.texto.insert("1.0", "Olá{nome}! 🎉 ")
+        self.texto.grid(row=1, column=1, pady=3)
+        ttk.Label(f, text="{nome} e {loja} são trocados. O \"responda SAIR\" entra sozinho no final.",
+                  foreground="gray").grid(row=2, column=1, sticky="w")
+        ttk.Label(f, text="Imagem (opcional):").grid(row=3, column=0, sticky="w")
+        linha = ttk.Frame(f)
+        linha.grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Button(linha, text="Escolher...", command=self.escolher_imagem).pack(side="left")
+        self.lbl_img = ttk.Label(linha, text="nenhuma", foreground="gray")
+        self.lbl_img.pack(side="left", padx=6)
+        ttk.Label(f, text="Só quem comprou nos últimos (dias):").grid(row=4, column=0, sticky="w")
+        e = ttk.Entry(f, textvariable=self.var_dias, width=6)
+        e.grid(row=4, column=1, sticky="w", pady=3)
+        e.bind("<KeyRelease>", lambda _e: self.atualizar_previa())
+        ttk.Label(f, text="Agendar (AAAA-MM-DD HH:MM):").grid(row=5, column=0, sticky="w")
+        ttk.Entry(f, textvariable=self.var_agenda, width=18).grid(row=5, column=1, sticky="w", pady=3)
+        self.lbl_previa = tk.Label(f, text="", fg=VERDE, font=("Segoe UI", 11, "bold"))
+        self.lbl_previa.grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
+        ttk.Button(f, text="Criar promoção", command=self.criar).grid(row=7, column=1, sticky="e")
+        self.atualizar_previa()
+
+    def _dias(self) -> int | None:
+        v = self.var_dias.get().strip()
+        return int(v) if v.isdigit() and int(v) > 0 else None
+
+    def atualizar_previa(self):
+        qtd = self.janela.disparador.previa(self._dias())
+        self.lbl_previa.configure(text=f"{qtd} cliente(s) vão receber (só quem aceitou promoções)")
+
+    def escolher_imagem(self):
+        caminho = filedialog.askopenfilename(parent=self, filetypes=[("Imagens", "*.jpg *.jpeg *.png *.webp")])
+        if caminho:
+            self.imagem = Path(caminho).read_bytes()
+            self.lbl_img.configure(text=Path(caminho).name)
+
+    def criar(self):
+        try:
+            agenda = self.var_agenda.get().strip()
+            quando = datetime.strptime(agenda, "%Y-%m-%d %H:%M") if agenda else None
+            camp = self.janela.disparador.criar(self.var_titulo.get(), self.texto.get("1.0", "end").strip(),
+                                                self.imagem, self._dias(), quando)
+        except ValueError as e:
+            messagebox.showerror("EcoZap", str(e), parent=self)
+            return
+        messagebox.showinfo("EcoZap", f"Promoção criada para {camp.total} cliente(s).\n"
+                                      "O envio é feito aos poucos, dentro do horário configurado.", parent=self)
+        self.destroy()
+        self.janela.atualizar()
+
+
+class JanelaPromocoes(tk.Toplevel):
+    STATUS = {"agendada": "🕒 Agendada", "enviando": "📤 Enviando", "pausada": "⏸ Pausada",
+              "concluida": "✅ Concluída", "cancelada": "✖ Cancelada"}
+
+    def __init__(self, app: "Aplicativo"):
+        super().__init__(app.raiz)
+        self.app, self.disparador = app, app.disparador
+        self.title("EcoZap - Promoções")
+        self.geometry("760x400")
+        app.definir_icone(self)
+        topo = ttk.Frame(self, padding=8)
+        topo.pack(fill="x")
+        self.lbl = tk.Label(topo, text="", fg=VERDE, font=("Segoe UI", 11, "bold"))
+        self.lbl.pack(side="left")
+        cols = (("id", "#", 40), ("titulo", "Promoção", 220), ("status", "Situação", 110),
+                ("quando", "Quando", 130), ("enviadas", "Enviadas", 80), ("outros", "Falhas / puladas", 120))
+        self.tabela = ttk.Treeview(self, columns=[c[0] for c in cols], show="headings", selectmode="browse")
+        for col, titulo, larg in cols:
+            self.tabela.heading(col, text=titulo)
+            self.tabela.column(col, width=larg)
+        self.tabela.pack(fill="both", expand=True, padx=8)
+        botoes = ttk.Frame(self, padding=8)
+        botoes.pack(fill="x")
+        ttk.Button(botoes, text="➕ Nova promoção", command=lambda: JanelaNovaPromocao(self)).pack(side="left")
+        for rotulo, acao in (("Pausar", "pausar"), ("Retomar", "retomar"), ("Cancelar", "cancelar")):
+            ttk.Button(botoes, text=rotulo, command=lambda a=acao: self.acao(a)).pack(side="left", padx=4)
+        ttk.Label(botoes, text="Só recebe quem respondeu PROMO ou autorizou no balcão.",
+                  foreground="gray").pack(side="right")
+        self.atualizar()
+
+    def acao(self, nome: str):
+        sel = self.tabela.selection()
+        if sel:
+            getattr(self.disparador, nome)(int(sel[0]))
+            self.atualizar(repetir=False)
+
+    def atualizar(self, repetir: bool = True):
+        if not self.winfo_exists():
+            return
+        sel = self.tabela.selection()
+        self.tabela.delete(*self.tabela.get_children())
+        for c in self.app.eco.armazenamento.listar_campanhas():
+            self.tabela.insert("", "end", iid=str(c.id), values=(
+                c.id, c.titulo, self.STATUS.get(c.status, c.status), c.agendada_para.replace("T", " ")[:16],
+                f"{c.enviados}/{c.total}", f"{c.falhas} / {c.pulados}"))
+        if sel and self.tabela.exists(sel[0]):
+            self.tabela.selection_set(sel[0])
+        cfg = self.app.eco.cfg["promocoes"]
+        self.lbl.configure(text=f"{self.disparador.previa()} cliente(s) aceitam promoções agora · "
+                                f"hoje: {self.app.eco.armazenamento.promocoes_enviadas_hoje()}/{cfg['limite_diario']} · "
+                                f"horário {cfg['horario_inicio']}–{cfg['horario_fim']}")
+        if repetir:
+            self.after(5000, self.atualizar)
 
 
 class Aplicativo:
@@ -381,12 +636,15 @@ class Aplicativo:
         self._icone_tk = ImageTk.PhotoImage(icone.gerar(64))
         self.definir_icone(self.raiz)
         self.painel = None
+        self.disparador = Disparador(eco)
+        eco.ouvintes.append(self._evento)
         self.bandeja = Bandeja(
             {"abrir": lambda: self.tarefas.put(self.mostrar),
              "pausar": self.alternar_pausa,
              "relatorio": lambda: self.tarefas.put(self.relatorio_mes),
              "painel": lambda: self.tarefas.put(self.abrir_painel),
              "configuracoes": lambda: self.tarefas.put(lambda: JanelaConfiguracoes(self)),
+             "promocoes": lambda: self.tarefas.put(lambda: (self.mostrar(), JanelaPromocoes(self))),
              "sair": lambda: self.tarefas.put(self.sair)},
             pausado=eco.pausado.is_set,
             painel_ativo=lambda: self.painel is not None)
@@ -398,6 +656,26 @@ class Aplicativo:
             janela.iconphoto(False, self._icone_tk)
         except tk.TclError:
             pass
+
+    def _evento(self, evento: str, dados) -> None:
+        """Chamado pelo serviço (outras threads): só agenda para a tela."""
+        if evento == "mensagem":
+            quem = dados.get("nome") or tel.formatar(dados["telefone"])
+            self.tarefas.put(lambda: (self.atualizar_lista(),
+                                      self.bandeja.notificar(f"{quem}: {(dados.get('texto') or '')[:60]}",
+                                                             "Mensagem no WhatsApp da loja")))
+        elif evento in ("enviado", "erro_envio", "entrega"):
+            self.tarefas.put(self.atualizar_lista)
+
+    def cartaz(self) -> None:
+        try:
+            pdf = cartaz.gerar_pdf(self.eco.cfg)
+        except ValueError as e:
+            messagebox.showinfo("EcoZap", f"{e}\n\nFerramentas > Configurações > Atendimento.")
+            return
+        destino = Path(self.eco.cfg["pasta_dados"]) / "cartaz-ecozap.pdf"
+        destino.write_bytes(pdf)
+        abrir_arquivo(destino)
 
     def _chegou(self, caminho: Path) -> None:
         comp = self.eco.receber_arquivo(caminho)  # roda na thread do monitor
@@ -414,6 +692,11 @@ class Aplicativo:
         m_fer.add_command(label="Configurações...", command=lambda: JanelaConfiguracoes(self))
         m_fer.add_command(label="Agenda de clientes...", command=lambda: JanelaAgenda(self))
         m_fer.add_command(label="Relatório do mês...", command=self.relatorio_mes)
+        m_fer.add_separator()
+        m_fer.add_command(label="Mensagens recebidas...", command=lambda: JanelaMensagens(self))
+        m_fer.add_command(label="Promoções...", command=lambda: JanelaPromocoes(self))
+        m_fer.add_command(label="Cartaz do balcão (PDF)", command=self.cartaz)
+        m_fer.add_separator()
         m_fer.add_command(label="Abrir painel web", command=self.abrir_painel)
         m_fer.add_command(label="Pausar / retomar recebimento", command=self.alternar_pausa)
         m_fer.add_command(label="Limpar comprovantes antigos agora",
@@ -561,7 +844,7 @@ class Aplicativo:
         if self.eco.cfg["painel"]["ativo"]:
             from .painel import Painel
             try:
-                self.painel = Painel(self.eco)
+                self.painel = Painel(self.eco, self.disparador)
                 self.painel.iniciar()
             except OSError as e:
                 self.painel = None
@@ -572,12 +855,14 @@ class Aplicativo:
             self.raiz.withdraw()
         self.atualizar_lista()
         self.monitor.iniciar()
+        self.disparador.iniciar()
         self._limpeza_periodica()
         self._executar_tarefas()
         try:
             self.raiz.mainloop()
         finally:
             self.monitor.parar()
+            self.disparador.parar()
             self.bandeja.parar()
             if self.painel:
                 self.painel.parar()

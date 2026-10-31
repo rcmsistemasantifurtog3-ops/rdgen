@@ -38,12 +38,41 @@ PADRAO: dict = {
     "mensagem_chave": "\n🔑 Chave de acesso: {chave}",
     "rodape_eco": "Comprovante digital - EcoZap. Menos papel, mais planeta.",
     "usar_bandeja": True,             # ícone perto do relógio do Windows
+    "numero_loja": "",                # WhatsApp da loja (para o cartaz e o QR do caixa)
+    "atendimento": {
+        "respostas_automaticas": True,
+        "minutos_associacao": 10,     # mensagem "solta" pega o comprovante pendente destes minutos
+        "texto_cartaz": "Oi! Quero meu comprovante digital",
+        "boas_vindas": "Olá{nome}! 👋 Aqui é a {loja}. Assim que o caixa finalizar a sua "
+                       "compra, o comprovante chega por aqui. 🌱",
+        "convite_promocoes": "\n\nQuer receber nossas ofertas de vez em quando? Responda "
+                             "*PROMO*. (Para cancelar a qualquer momento, responda *SAIR*.)",
+        "comprovante_a_caminho": "Recebido{nome}! Seu comprovante está chegando. 🌱",
+        "sem_comprovante": "Não encontramos comprovante recente para este número. Se você "
+                           "acabou de comprar, peça ao caixa para enviar. 🙂",
+        "promo_aceita": "Pronto{nome}! 🎉 Você vai receber ofertas da {loja} de vez em quando. "
+                        "Para cancelar, é só responder SAIR.",
+        "promo_cancelada": "Tudo certo, você não vai mais receber ofertas da {loja}. "
+                           "Seus comprovantes continuam chegando normalmente.",
+    },
+    "promocoes": {
+        "ativo": True,
+        "horario_inicio": "09:00",    # só envia promoções dentro deste horário
+        "horario_fim": "20:00",
+        "intervalo_min_segundos": 8,  # pausa aleatória entre um envio e outro
+        "intervalo_max_segundos": 20,
+        "limite_diario": 200,
+        "dias_entre_promocoes": 7,    # no máximo 1 promoção por cliente neste período
+    },
     "whatsapp": {
         "provedor": "simulado",       # simulado | cloud_api | evolution
         "cloud_api": {"token": "", "phone_number_id": "", "versao_api": "v21.0",
                       "template": "", "idioma_template": "pt_BR",
-                      "parametros_template": ["{loja}"]},
-        "evolution": {"url_base": "", "instancia": "", "apikey": ""},
+                      "parametros_template": ["{loja}"],
+                      "template_promocao": "", "template_promocao_imagem": "",
+                      "parametros_template_promocao": ["{texto}"],
+                      "verify_token": "", "app_secret": ""},
+        "evolution": {"url_base": "", "instancia": "", "apikey": "", "webhook_token": ""},
     },
     "painel": {
         "ativo": False,
@@ -112,6 +141,11 @@ def salvar(cfg: dict) -> Path:
     return arquivo
 
 
+def _telefone_ok(numero: str) -> bool:
+    from .telefone import normalizar
+    return normalizar(numero) is not None
+
+
 def validar(cfg: dict) -> None:
     if cfg["formato_padrao"] not in FORMATOS:
         raise ErroConfig(f"formato_padrao deve ser um de {FORMATOS}")
@@ -123,6 +157,17 @@ def validar(cfg: dict) -> None:
         raise ErroConfig("dias_retencao_clientes não pode ser negativo")
     if cfg["whatsapp"]["provedor"] not in PROVEDORES:
         raise ErroConfig(f"whatsapp.provedor deve ser um de {PROVEDORES}")
+    p = cfg["promocoes"]
+    for campo in ("horario_inicio", "horario_fim"):
+        try:
+            h, m = (int(x) for x in str(p[campo]).split(":"))
+            assert 0 <= h < 24 and 0 <= m < 60
+        except (ValueError, AssertionError) as e:
+            raise ErroConfig(f"promocoes.{campo} deve estar no formato HH:MM") from e
+    if int(p["intervalo_min_segundos"]) < 1 or int(p["intervalo_max_segundos"]) < int(p["intervalo_min_segundos"]):
+        raise ErroConfig("promocoes: intervalo_max_segundos deve ser >= intervalo_min_segundos >= 1")
+    if cfg["numero_loja"] and not _telefone_ok(cfg["numero_loja"]):
+        raise ErroConfig("numero_loja inválido (use DDD + número)")
     painel = cfg["painel"]
     if painel["ativo"] and painel["host"] not in ("127.0.0.1", "localhost") and not painel["senha"]:
         raise ErroConfig("painel acessível pela rede precisa de senha (painel.senha)")

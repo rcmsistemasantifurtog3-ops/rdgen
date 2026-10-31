@@ -123,14 +123,16 @@ class SessaoFalsa:
 
 def test_cloud_api_com_template():
     s = SessaoFalsa([(200, {"id": "MID"}), (200, {"messages": [{"id": "wamid.1"}]})])
-    api = CloudAPI("tok", "123", template="recibo_ecozap", sessao=s)
+    api = CloudAPI("tok", "123", sessao=s)
     assert api.enviar("5511987654321", b"%PDF", "c.pdf", "application/pdf", "oi",
-                      parametros_template=["Loja"]) == "wamid.1"
+                      template="recibo_ecozap", parametros_template=["Loja\nCentro"]) == "wamid.1"
     assert s.headers["Authorization"] == "Bearer tok"
     corpo = s.chamadas[1][1]["json"]
     assert corpo["type"] == "template"
     header = corpo["template"]["components"][0]["parameters"][0]
     assert header == {"type": "document", "document": {"id": "MID", "filename": "c.pdf"}}
+    # a Meta recusa quebra de linha em parâmetro: o EcoZap troca por " · "
+    assert corpo["template"]["components"][1]["parameters"][0]["text"] == "Loja · Centro"
 
 
 def test_cloud_api_erro():

@@ -22,3 +22,8 @@ def test_extrair_com_palavra_chave():
 
 def test_extrair_nao_confunde_cpf():
     assert tel.extrair("CPF: 123.456.789-09\nCNPJ 12.345.678/0001-90") is None
+
+
+def test_celular_antigo_sem_nove_vira_padrao():
+    assert tel.normalizar("551187654321") == "5511987654321"   # vem assim do WhatsApp
+    assert tel.normalizar("551133334444") == "551133334444"    # fixo continua fixo

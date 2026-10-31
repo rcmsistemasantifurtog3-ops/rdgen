@@ -1,7 +1,7 @@
 ---
 projeto: EcoZap
 tags: [projeto, ecozap, whatsapp, impressora-virtual, python]
-status: v0.2 - pronto para teste
+status: v0.3 - pronto para teste
 criado: 2026-10-31
 atualizado: 2026-10-31
 repo: rcmsistemasantifurtog3-ops/rdgen (pasta ecozap/)
@@ -18,6 +18,9 @@ gera PDF/JPEG/PNG e envia pelo WhatsApp do cliente. Menos papel, cópia digital 
 - **v0.1** — impressora virtual, conversão, envio, histórico, limpeza de 15 dias.
 - **v0.2** — bandeja, agenda de clientes (CPF com HMAC), link/QR da NFC-e,
   painel web multi-caixa, modo serviço, relatório mensal, instalador .exe, CI.
+- **v0.3** — cliente escreve primeiro (webhook Cloud/Evolution), cartaz do balcão,
+  código + QR na tela do caixa, respostas automáticas, 2ª via, entregue/lido,
+  promoções com opt-in (PROMO/SAIR), limites e agendamento.
 
 ## Decisões
 - **Python 3.12** + fpdf2, pypdfium2, Pillow, requests, qrcode, zxing-cpp, pystray. Telas em Tkinter.
@@ -37,6 +40,20 @@ gera PDF/JPEG/PNG e envia pelo WhatsApp do cliente. Menos papel, cópia digital 
 - **Instalador:** PyInstaller (EcoZap.exe + ecozap-cli.exe) + Inno Setup; GitHub Actions gera e testa.
 - **WhatsApp:** `simulado` | `cloud_api` (oficial; template fora da janela de 24h) | `evolution`.
 
+## Fluxo "cliente escreve primeiro" (v0.3)
+- Abre a janela de 24h da Meta → comprovante vai **sem template e sem custo**.
+- Mensagem → (1) código do comprovante, (2) único pendente nos últimos 10 min,
+  (3) caixa escolhe na lista, (4) "2ª via", (5) boas-vindas + convite PROMO.
+- Webhooks: `/webhook/whatsapp` (assinatura `X-Hub-Signature-256` com app_secret),
+  `/webhook/evolution?token=` — fora da senha do painel, com segredo próprio.
+- Meta precisa de HTTPS público → Cloudflare Tunnel.
+- Celular antigo sem 9 (12 dígitos) é padronizado com 9.
+
+## Promoções
+- Só opt-in; rodapé SAIR fixo; 1 a cada 7 dias; horário 9–20h; pausa 8–20 s; 200/dia.
+- Cloud API fora da janela: template MARKETING (`template_promocao`), senão "pulado".
+- Consentimento registrado (data + origem) = prova para LGPD.
+
 ## Como testar
 1. GitHub → Actions → "EcoZap - testes e instalador" → Artifacts → **EcoZap-Instalador**.
 2. Instalar (admin) → Configurações → "Enviar teste..." (provedor simulado primeiro).
@@ -48,4 +65,7 @@ gera PDF/JPEG/PNG e envia pelo WhatsApp do cliente. Menos papel, cópia digital 
 - [ ] Testar com o PDV real (ESC/POS) e conferir acentos / QR
 - [ ] Criar e aprovar template na Meta (cabeçalho Documento + {{1}} loja + {{2}} link)
 - [ ] Certificado de assinatura de código (SmartScreen)
+- [ ] Configurar webhook (Evolution na rede ou Cloudflare Tunnel para a Meta)
+- [ ] Imprimir o cartaz do balcão e testar o fluxo com um celular
+- [ ] Aprovar template MARKETING para promoções (Cloud API)
 - [ ] Atualização automática / webhook de entregue-lido
