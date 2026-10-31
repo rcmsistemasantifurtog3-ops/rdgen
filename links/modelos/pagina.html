@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="$csp">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>$titulo</title>
+<meta name="description" content="$descricao">
+<meta name="theme-color" content="$cor">
+<meta name="color-scheme" content="dark light">
+<link rel="canonical" href="$url">
+<link rel="icon" href="$favicon">
+<meta property="og:type" content="profile">
+<meta property="og:title" content="$titulo">
+<meta property="og:description" content="$descricao">
+<meta property="og:url" content="$url">
+<meta property="og:locale" content="pt_BR">
+<meta name="twitter:card" content="summary">
+<style>$css</style>
+<style>$css_tema</style>
+</head>
+<body>
+<div class="fundo" aria-hidden="true"><i></i><i></i><i></i></div>
+<main class="cartao">
+  <header class="perfil">
+    <div class="anel">$avatar</div>
+    <h1>$nome$selo</h1>
+    <p class="bio">$bio</p>
+    <ul class="sociais">$sociais</ul>
+  </header>
+  <nav aria-label="Links">
+    <ul class="links">$links</ul>
+  </nav>
+  <div class="acoes">
+    $contato_btn
+    <button class="acao" id="compartilhar" type="button" data-url="$url">$icone_compartilhar<span>Compartilhar</span></button>
+    <a class="acao" href="qr.svg" download="qrcode.svg">$icone_qr<span>QR code</span></a>
+  </div>
+  <footer>$rodape</footer>
+</main>
+<div class="aviso" id="aviso" role="status" aria-live="polite"></div>
+<script>$js</script>
+</body>
+</html>

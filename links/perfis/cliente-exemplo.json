@@ -1,0 +1,13 @@
+{
+  "slug": "padaria-exemplo",
+  "nome": "Padaria Exemplo",
+  "bio": "Pães artesanais todos os dias desde 1998.",
+  "tema": { "primaria": "#d97706", "secundaria": "#dc2626" },
+  "links": [
+    { "titulo": "Faça seu pedido pelo WhatsApp", "icone": "whatsapp", "url": "https://wa.me/5500000000000", "destaque": true },
+    { "titulo": "Avalie no Google", "icone": "avaliacao", "url": "https://g.page/r/ID_DO_CLIENTE/review" },
+    { "titulo": "Como chegar", "icone": "mapa", "url": "https://maps.google.com/?q=Padaria+Exemplo" },
+    { "titulo": "Instagram", "icone": "instagram", "url": "https://www.instagram.com/padariaexemplo" }
+  ],
+  "rodape": "Página criada pela RCM Sistemas"
+}

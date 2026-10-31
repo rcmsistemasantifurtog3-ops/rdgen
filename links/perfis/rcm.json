@@ -1,0 +1,92 @@
+{
+  "slug": "rcm",
+  "nome": "RCM Sistemas",
+  "sigla": "RCM",
+  "verificado": true,
+  "bio": "Tecnologia, segurança e software para o seu negócio.",
+  "tema": {
+    "primaria": "#2563eb",
+    "secundaria": "#06b6d4"
+  },
+  "links": [
+    {
+      "titulo": "Quero receber novidades por WhatsApp",
+      "descricao": "Promoções e lançamentos em primeira mão",
+      "icone": "novidades",
+      "url": "https://wa.me/5500000000000?text=Ol%C3%A1%2C%20quero%20receber%20novidades%20da%20RCM%21",
+      "destaque": true
+    },
+    {
+      "titulo": "Avalie no Google",
+      "descricao": "Sua opinião ajuda muito a gente",
+      "icone": "avaliacao",
+      "url": "https://g.page/r/SEU_ID_GOOGLE/review"
+    },
+    {
+      "titulo": "Fale conosco no WhatsApp",
+      "descricao": "Atendimento e suporte",
+      "icone": "whatsapp",
+      "url": "https://wa.me/5500000000000"
+    },
+    {
+      "titulo": "Nosso site",
+      "icone": "site",
+      "url": "https://www.rcmsistemas.com.br"
+    },
+    {
+      "titulo": "Produtos",
+      "descricao": "Conheça nossas soluções",
+      "icone": "produtos",
+      "url": "https://www.rcmsistemas.com.br/produtos"
+    },
+    {
+      "titulo": "Softwares",
+      "descricao": "Sistemas e downloads",
+      "icone": "software",
+      "url": "https://www.rcmsistemas.com.br/softwares"
+    },
+    {
+      "titulo": "Instagram",
+      "icone": "instagram",
+      "url": "https://www.instagram.com/rcmsistemas"
+    },
+    {
+      "titulo": "LinkedIn",
+      "icone": "linkedin",
+      "url": "https://www.linkedin.com/company/rcmsistemas"
+    },
+    {
+      "titulo": "Canal no YouTube",
+      "icone": "youtube",
+      "url": "https://www.youtube.com/@rcmsistemas"
+    }
+  ],
+  "sociais": [
+    {
+      "titulo": "Instagram",
+      "icone": "instagram",
+      "url": "https://www.instagram.com/rcmsistemas"
+    },
+    {
+      "titulo": "LinkedIn",
+      "icone": "linkedin",
+      "url": "https://www.linkedin.com/company/rcmsistemas"
+    },
+    {
+      "titulo": "YouTube",
+      "icone": "youtube",
+      "url": "https://www.youtube.com/@rcmsistemas"
+    },
+    {
+      "titulo": "WhatsApp",
+      "icone": "whatsapp",
+      "url": "https://wa.me/5500000000000"
+    }
+  ],
+  "contato": {
+    "telefone": "+55 00 00000-0000",
+    "email": "contato@rcmsistemas.com.br",
+    "site": "https://www.rcmsistemas.com.br"
+  },
+  "rodape": "© RCM Sistemas"
+}
